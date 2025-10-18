@@ -1,0 +1,5 @@
+frontier_explorer:
+  ros__parameters:
+    frontier_search_radius: 5.0
+    min_frontier_size: 10
+    goal_offset_distance: 0.5
