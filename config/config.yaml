@@ -1,5 +1,8 @@
-frontier_explorer:
-  ros__parameters:
-    frontier_search_radius: 5.0
-    min_frontier_size: 10
-    goal_offset_distance: 0.5
+# Frontier Explorer Configuration
+
+# Navigation parameters
+frontier_search_radius: 5.0  # Maximum distance (meters) to search for frontiers from current position
+goal_offset_distance: 0.5    # Distance (meters) to offset goal inside free space from frontier boundary
+
+# Frontier detection parameters
+min_frontier_size: 10        # Minimum number of contiguous unexplored cells to consider valid frontier
