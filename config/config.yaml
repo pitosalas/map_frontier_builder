@@ -6,3 +6,10 @@ goal_offset_distance: 0.5    # Distance (meters) to offset goal inside free spac
 
 # Frontier detection parameters
 min_frontier_size: 10        # Minimum number of contiguous unexplored cells to consider valid frontier
+
+# Velocity limits
+max_translation_speed: 0.2   # Maximum linear velocity (m/s)
+max_rotation_speed: 0.5      # Maximum angular velocity (rad/s)
+
+# Navigation mode
+nav_to_target: false        # If true, automatically navigate to selected frontiers. If false, visualize only.

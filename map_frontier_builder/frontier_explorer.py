@@ -1,16 +1,16 @@
-import rclpy
-from rclpy.node import Node
-from rclpy.action import ActionClient
-from nav_msgs.msg import OccupancyGrid
-from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point, PoseStamped
-from std_msgs.msg import ColorRGBA
-from nav2_msgs.action import NavigateToPose
-import yaml
 import os
-from ament_index_python.packages import get_package_share_directory
+
 import numpy as np
-import math
+import rclpy
+import yaml
+from ament_index_python.packages import get_package_share_directory
+from geometry_msgs.msg import Point, PoseStamped
+from nav2_msgs.action import NavigateToPose
+from nav_msgs.msg import OccupancyGrid
+from rclpy.action import ActionClient
+from rclpy.node import Node
+from std_msgs.msg import ColorRGBA
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 class FrontierExplorer(Node):
@@ -20,43 +20,34 @@ class FrontierExplorer(Node):
 
         # Load configuration from YAML file
         config_path = os.path.join(
-            get_package_share_directory('map_frontier_builder'),
-            'config',
-            'config.yaml'
+            get_package_share_directory("map_frontier_builder"), "config", "config.yaml"
         )
 
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
         # Load parameters from config
-        self.search_radius = config['frontier_search_radius']
-        self.min_size = config['min_frontier_size']
-        self.goal_offset = config['goal_offset_distance']
+        self.search_radius = config["frontier_search_radius"]
+        self.min_size = config["min_frontier_size"]
+        self.goal_offset = config["goal_offset_distance"]
+        self.nav_to_target = config.get("nav_to_target", False)
 
-        self.get_logger().info(
-            f"Config loaded from {config_path}"
-        )
+        self.get_logger().info(f"Config loaded from {config_path}")
         self.get_logger().info(
             f"  search_radius={self.search_radius}m, "
             f"min_size={self.min_size}, offset={self.goal_offset}m"
         )
+        self.get_logger().info(f"  nav_to_target={self.nav_to_target}")
 
         self.map_sub = self.create_subscription(
-            OccupancyGrid,
-            "/map",
-            self.map_callback,
-            10
+            OccupancyGrid, "/map", self.map_callback, 10
         )
 
         # Publisher for frontier visualization
-        self.marker_pub = self.create_publisher(
-            MarkerArray,
-            "/frontier_markers",
-            10
-        )
+        self.marker_pub = self.create_publisher(MarkerArray, "/frontier_markers", 10)
 
         # Nav2 action client
-        self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+        self.nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
         self.get_logger().info("Waiting for Nav2 action server...")
         self.nav_client.wait_for_server()
         self.get_logger().info("Nav2 action server ready")
@@ -68,8 +59,7 @@ class FrontierExplorer(Node):
     def map_callback(self, msg):
         self.current_map = msg
         self.get_logger().info(
-            f"Map: {msg.info.width}x{msg.info.height}, "
-            f"res={msg.info.resolution:.3f}m"
+            f"Map: {msg.info.width}x{msg.info.height}, res={msg.info.resolution:.3f}m"
         )
 
         # Detect frontiers
@@ -78,14 +68,17 @@ class FrontierExplorer(Node):
 
         # Visualize frontiers
         if len(frontiers) > 0:
-            markers = self.create_frontier_markers(frontiers, msg)
-            self.marker_pub.publish(markers)
-            self.get_logger().info(f"Published {len(markers.markers)} visualization markers")
+            selected_frontier = self.select_best_frontier(frontiers)
 
-            # Step 6: Send navigation goal to first frontier (for testing)
-            # TODO: Step 5 will add proper frontier selection logic
-            if not self.navigating and len(frontiers) > 0:
-                self.send_navigation_goal(frontiers[0], msg)
+            markers = self.create_frontier_markers(frontiers, msg, selected_frontier)
+            self.marker_pub.publish(markers)
+            self.get_logger().info(
+                f"Published {len(markers.markers)} visualization markers"
+            )
+
+            # Send navigation goal if enabled
+            if self.nav_to_target and not self.navigating and len(frontiers) > 0:
+                self.send_navigation_goal(selected_frontier, msg)
 
     def find_frontier_cells(self, map_msg):
         """
@@ -141,20 +134,64 @@ class FrontierExplorer(Node):
 
         return False
 
-    def create_frontier_markers(self, frontiers, map_msg):
-        """
-        Create visualization markers for frontier cells.
+    def cluster_frontiers(self, frontiers):
+        """Group adjacent frontier cells into clusters using 8-connectivity."""
+        if not frontiers:
+            return []
 
-        Args:
-            frontiers: List of (x, y) grid coordinates
-            map_msg: OccupancyGrid message for coordinate transformation
+        frontier_set = set(frontiers)
+        visited = set()
+        clusters = []
 
-        Returns:
-            MarkerArray with points representing frontiers
-        """
+        for frontier in frontiers:
+            if frontier in visited:
+                continue
+
+            # BFS to find all connected frontiers
+            cluster = []
+            queue = [frontier]
+            visited.add(frontier)
+
+            while queue:
+                x, y = queue.pop(0)
+                cluster.append((x, y))
+
+                # Check 8 neighbors
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        if dx == 0 and dy == 0:
+                            continue
+
+                        neighbor = (x + dx, y + dy)
+                        if neighbor in frontier_set and neighbor not in visited:
+                            visited.add(neighbor)
+                            queue.append(neighbor)
+
+            clusters.append(cluster)
+
+        return clusters
+
+    def select_best_frontier(self, frontiers):
+        """Select target from largest frontier cluster (center of cluster)."""
+        clusters = self.cluster_frontiers(frontiers)
+
+        if not clusters:
+            return frontiers[0]
+
+        # Find largest cluster
+        largest_cluster = max(clusters, key=len)
+
+        # Return center of largest cluster
+        center_x = sum(x for x, _ in largest_cluster) // len(largest_cluster)
+        center_y = sum(y for _, y in largest_cluster) // len(largest_cluster)
+
+        return (center_x, center_y)
+
+    def create_frontier_markers(self, frontiers, map_msg, selected_frontier):
+        """Create markers: cyan points for all frontiers, orange sphere for selected target."""
         marker_array = MarkerArray()
 
-        # Create a single marker with all frontier points
+        # Create marker with all frontier points
         marker = Marker()
         marker.header.frame_id = map_msg.header.frame_id
         marker.header.stamp = self.get_clock().now().to_msg()
@@ -164,11 +201,9 @@ class FrontierExplorer(Node):
         marker.action = Marker.ADD
         marker.pose.orientation.w = 1.0
 
-        # Size of points
-        marker.scale.x = map_msg.info.resolution  # Point width
-        marker.scale.y = map_msg.info.resolution  # Point height
+        marker.scale.x = map_msg.info.resolution
+        marker.scale.y = map_msg.info.resolution
 
-        # Color: bright cyan/blue for visibility
         marker.color = ColorRGBA()
         marker.color.r = 0.0
         marker.color.g = 1.0
@@ -178,13 +213,49 @@ class FrontierExplorer(Node):
         # Convert grid coordinates to world coordinates
         for x, y in frontiers:
             point = Point()
-            # Transform from grid coordinates to world coordinates
-            point.x = map_msg.info.origin.position.x + (x + 0.5) * map_msg.info.resolution
-            point.y = map_msg.info.origin.position.y + (y + 0.5) * map_msg.info.resolution
+            point.x = (
+                map_msg.info.origin.position.x + (x + 0.5) * map_msg.info.resolution
+            )
+            point.y = (
+                map_msg.info.origin.position.y + (y + 0.5) * map_msg.info.resolution
+            )
             point.z = 0.0
             marker.points.append(point)
 
         marker_array.markers.append(marker)
+
+        # Add orange sphere marker for selected target
+        target_marker = Marker()
+        target_marker.header.frame_id = map_msg.header.frame_id
+        target_marker.header.stamp = self.get_clock().now().to_msg()
+        target_marker.ns = "selected_target"
+        target_marker.id = 1
+        target_marker.type = Marker.SPHERE
+        target_marker.action = Marker.ADD
+
+        x, y = selected_frontier
+        target_marker.pose.position.x = (
+            map_msg.info.origin.position.x + (x + 0.5) * map_msg.info.resolution
+        )
+        target_marker.pose.position.y = (
+            map_msg.info.origin.position.y + (y + 0.5) * map_msg.info.resolution
+        )
+        target_marker.pose.position.z = 0.1
+        target_marker.pose.orientation.w = 1.0
+
+        marker_size = max(0.3, map_msg.info.resolution * 5)
+        target_marker.scale.x = marker_size
+        target_marker.scale.y = marker_size
+        target_marker.scale.z = marker_size
+
+        target_marker.color = ColorRGBA()
+        target_marker.color.r = 1.0
+        target_marker.color.g = 0.65
+        target_marker.color.b = 0.0
+        target_marker.color.a = 0.9
+
+        marker_array.markers.append(target_marker)
+
         return marker_array
 
     def send_navigation_goal(self, frontier_cell, map_msg):
@@ -220,8 +291,7 @@ class FrontierExplorer(Node):
         # Send goal asynchronously
         self.navigating = True
         send_goal_future = self.nav_client.send_goal_async(
-            goal_msg,
-            feedback_callback=self.nav_feedback_callback
+            goal_msg, feedback_callback=self.nav_feedback_callback
         )
         send_goal_future.add_done_callback(self.nav_goal_response_callback)
 
