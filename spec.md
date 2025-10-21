@@ -1,16 +1,7 @@
 # Map Frontier Builder Specification
 
 ## Overview
-* An app that will make the robot move in certain ways to achieve coverage of the space and allow a map to be built
-* Motion is slow and deliberate
-* LIDAR data is used to make sure the robot does not get closer to an obstacle than a certain constant in the config.yaml file
-* We access the current map showing the area around the robot
-* We determine what parts of the map are as yet unexplored
-* We call that the frontier
-* We look for a point that can be reached by a straight forward motion that is on the frontier and that is as far as possible
-* We rotate the robot so that it is pointed in that direction
-* And we command it to move in that direction
-* At all times we will not allow the robot to get closer than a constant distance to an obstacle in the direction of travel
+Autonomous frontier exploration system that enables a robot to systematically explore and map unknown environments. The system identifies unexplored areas (frontiers), clusters them to find significant regions, and navigates to the center of the largest cluster for efficient exploration.
 
 ## Confirmed Design Decisions
 
@@ -44,9 +35,12 @@
 * Simple state machine: picking goal → navigating → goal done → repeat
 
 ### Configuration Parameters (config.yaml)
-* frontier_search_radius: Maximum distance to search for frontier points from current position
-* min_frontier_size: Minimum number of contiguous unexplored cells to consider as valid frontier
-* goal_offset_distance: Distance to offset goal point inside known free space from frontier boundary
+* frontier_search_radius: Maximum distance to search for frontier points from current position (5.0m)
+* min_frontier_size: Minimum number of contiguous unexplored cells to consider as valid frontier (10 cells)
+* goal_offset_distance: Distance to offset goal point inside known free space from frontier boundary (0.5m)
+* max_translation_speed: Maximum linear velocity (0.2 m/s)
+* max_rotation_speed: Maximum angular velocity (0.5 rad/s)
+* nav_to_target: Boolean flag - if true, automatically navigate to frontiers; if false, visualize only
 * Note: Obstacle avoidance distance configured in Nav2 costmap parameters, not here
 
 ### Node Architecture
@@ -64,50 +58,63 @@
 * Recovery behaviors: Rely on Nav2's built-in recovery (backup, spin, wait behaviors)
 * No reachable frontiers: Stop and report exploration complete
 
+### Frontier Selection Strategy
+* Groups frontier cells into clusters using 8-connectivity BFS algorithm
+* Selects the largest contiguous frontier cluster (most unexplored area)
+* Targets the center point of the largest cluster for balanced exploration
+* Benefits: Prioritizes large unexplored regions over small isolated pockets
+
+### Visualization
+* Publishes MarkerArray to `/frontier_markers` topic
+* Cyan points: All detected frontier cells
+* Orange sphere: Selected target frontier (center of largest cluster)
+* Target sphere is larger (0.3m minimum, 5x map resolution) and elevated (z=0.1) for visibility
+
+## Implementation Status
+
+### ✅ Completed Steps
+
+**Step 1-2: Basic Map Subscriber & Config**
+- ROS2 node subscribes to `/map` topic
+- Config file loads all parameters
+- Logs map dimensions and config values
+
+**Step 3: Frontier Detection**
+- Detects frontier cells (unknown cells adjacent to free space)
+- Uses 8-connectivity to check neighbors
+- Logs frontier cell count
+
+**Step 4: Frontier Visualization**
+- Publishes cyan point markers for all frontiers
+- Publishes orange sphere marker for selected target
+- Visible in RViz on `/frontier_markers` topic
+
+**Step 5: Best Frontier Selection**
+- Implements frontier clustering using BFS
+- Selects center of largest cluster as target
+- Improved from simple "first frontier" to intelligent cluster-based selection
+
+**Step 6: Nav2 Integration**
+- Nav2 action client integrated
+- Sends NavigateToPose goals to selected frontiers
+- Tracks navigation state (navigating flag)
+- Handles goal responses and results
+
+### 🚧 Remaining Work
+
+**Step 7: Event-Driven Loop**
+- Currently sends goal on each map update if not navigating
+- Need to add proper event-driven loop that waits for goal completion
+- Should re-evaluate frontiers only after navigation completes
+
+**Step 8: Termination & Polish**
+- Add "no frontiers found" detection
+- Implement clean shutdown
+- Add recovery behavior for failed navigation
+- Test complete exploration scenarios
+
 ## Open Questions
 
-None - specification is complete and ready for implementation.
-
-## Implementation Plan
-
-### Step 1: Basic Map Subscriber
-- Create simple ROS2 node
-- Subscribe to `/map` topic
-- Log map dimensions, resolution when received
-- **Validation:** Run with slam_toolbox, verify map data logged
-
-### Step 2: Config File
-- Create config.yaml with our 3 parameters
-- Load config in node
-- Log parameter values
-- **Validation:** Check parameters load correctly
-
-### Step 3: Frontier Detection
-- Implement algorithm to find frontier cells (unknown adjacent to free)
-- Log number of frontier cells found
-- **Validation:** Print frontier count, verify it changes as map grows
-
-### Step 4: Frontier Visualization
-- Publish visualization markers showing frontiers
-- **Validation:** View in RViz, see frontier points highlighted
-
-### Step 5: Best Frontier Selection
-- Apply filters (search radius, min size)
-- Select farthest reachable frontier
-- Log selected frontier coordinates
-- **Validation:** Verify selection makes sense in RViz
-
-### Step 6: Nav2 Integration
-- Add Nav2 action client
-- Send ONE goal to selected frontier
-- Log action result
-- **Validation:** Watch robot navigate to frontier once
-
-### Step 7: Event-Driven Loop
-- On goal completion, repeat frontier selection
-- **Validation:** Watch autonomous exploration
-
-### Step 8: Termination & Polish
-- Add termination conditions
-- Clean shutdown handling
-- **Validation:** Verify stops when done or interrupted
+* Should search_radius filter be applied to limit frontier distance from robot?
+* How to handle navigation failures (retry same frontier, skip to next, abort)?
+* Should min_frontier_size filter out small clusters before selection?
